@@ -22,12 +22,12 @@ public class AnimationWidget(AnimationCapability capability) : Widget<AnimationC
     {
         var cap = Capability;
 
-        if(ImGui.Button(cap.IsPlaying ? "Pause" : "Play", new Vector2(70, 0)))
+        if(ImGui.Button(cap.IsPlaying ? "Pause" : "Play"))
             cap.TogglePlay();
 
         ImGui.SameLine();
 
-        if(ImGui.Button("Stop", new Vector2(70, 0)))
+        if(ImGui.Button("Stop"))
             cap.Stop();
 
         ImGui.SameLine();

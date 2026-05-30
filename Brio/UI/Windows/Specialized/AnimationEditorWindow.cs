@@ -117,35 +117,35 @@ public class AnimationEditorWindow : Window, IDisposable
 
     private void DrawTools(AnimationCapability cap)
     {
-        if(ImGui.Button("|< Prev", new Vector2(70, 0)))
+        if(ImGui.Button("|< Prev"))
             cap.JumpToPrevKeyframe();
         AttachTooltip("Jump to the previous keyframe");
 
         ImGui.SameLine();
-        if(ImGui.Button("Next >|", new Vector2(70, 0)))
+        if(ImGui.Button("Next >|"))
             cap.JumpToNextKeyframe();
         AttachTooltip("Jump to the next keyframe");
 
         ImGui.SameLine();
-        if(ImGui.Button("Make Loop", new Vector2(90, 0)))
+        if(ImGui.Button("Make Loop"))
             cap.KeyAllTracksFromTime(0f);
         AttachTooltip("Key every track at the playhead using its value at t=0 — scrub to the end first for a seamless loop");
 
         ImGui.SameLine();
-        if(ImGui.Button("Copy Frame", new Vector2(100, 0)))
+        if(ImGui.Button("Copy Frame"))
             cap.CopyFrame();
         AttachTooltip("Copy the whole pose at the playhead (all tracks)");
 
         ImGui.SameLine();
         using(Dalamud.Interface.Utility.Raii.ImRaii.Disabled(!cap.HasFrameClipboard))
         {
-            if(ImGui.Button("Paste Frame", new Vector2(100, 0)))
+            if(ImGui.Button("Paste Frame"))
                 cap.PasteFrame();
         }
         AttachTooltip("Paste the copied whole-pose at the playhead");
 
         ImGui.SameLine();
-        if(ImGui.Button("Mirror @ Playhead", new Vector2(150, 0)))
+        if(ImGui.Button("Mirror @ Playhead"))
             cap.MirrorAtPlayhead();
         AttachTooltip("Mirror the current pose left/right and re-key the existing tracks (beta)");
     }
@@ -154,9 +154,6 @@ public class AnimationEditorWindow : Window, IDisposable
     {
         if(!ImGui.IsWindowFocused(ImGuiFocusedFlags.RootAndChildWindows) || ImGui.GetIO().WantTextInput)
             return;
-
-        if(ImGui.IsKeyPressed(ImGuiKey.Space, false))
-            cap.TogglePlay();
 
         if(ImGui.IsKeyPressed(ImGuiKey.Delete, false))
             DeleteSelectedKeyframe(cap);
@@ -183,15 +180,15 @@ public class AnimationEditorWindow : Window, IDisposable
 
     private void DrawTransport(AnimationCapability cap)
     {
-        if(ImGui.Button(cap.IsPlaying ? "Pause" : "Play", new Vector2(70, 0)))
+        if(ImGui.Button(cap.IsPlaying ? "Pause" : "Play"))
             cap.TogglePlay();
 
         ImGui.SameLine();
-        if(ImGui.Button("Stop", new Vector2(70, 0)))
+        if(ImGui.Button("Stop"))
             cap.Stop();
 
         ImGui.SameLine();
-        if(ImGui.Button("Edit @ Playhead", new Vector2(130, 0)))
+        if(ImGui.Button("Edit @ Playhead"))
             cap.EditAtPlayhead();
         AttachTooltip("Load the pose at the playhead onto the rig so you can keep posing from here");
 
@@ -212,22 +209,22 @@ public class AnimationEditorWindow : Window, IDisposable
         if(ImGui.InputFloat("Duration", ref duration, 0.5f, 1f, "%.2f"))
             cap.Duration = duration;
 
-        if(ImGui.Button("Key Selected", new Vector2(120, 0)))
+        if(ImGui.Button("Key Selected"))
             cap.KeySelected();
         AttachTooltip("Key the selected bone(s) at the playhead");
 
         ImGui.SameLine();
-        if(ImGui.Button("Key All Bones", new Vector2(120, 0)))
+        if(ImGui.Button("Key All Bones"))
             cap.KeyAll();
         AttachTooltip("Key every body bone at the playhead");
 
         ImGui.SameLine();
-        if(ImGui.Button("Key Root", new Vector2(90, 0)))
+        if(ImGui.Button("Key Root"))
             cap.KeyModelTransform();
         AttachTooltip("Key the whole-body model transform (position/rotation/scale) at the playhead");
 
         ImGui.SameLine();
-        if(ImGui.Button("Save", new Vector2(80, 0)))
+        if(ImGui.Button("Save"))
         {
             UIManager.Instance.FileDialogManager.SaveFileDialog("Save Animation###save_anim", "Brio Animation (*.bclip){.bclip}", "animation", ".bclip",
                 (success, path) =>
@@ -241,7 +238,7 @@ public class AnimationEditorWindow : Window, IDisposable
         }
 
         ImGui.SameLine();
-        if(ImGui.Button("Load", new Vector2(80, 0)))
+        if(ImGui.Button("Load"))
         {
             UIManager.Instance.FileDialogManager.OpenFileDialog("Load Animation###load_anim", "Brio Animation (*.bclip){.bclip}",
                 (success, paths) =>
@@ -507,14 +504,14 @@ public class AnimationEditorWindow : Window, IDisposable
             }
         }
 
-        if(ImGui.Button("Copy", new Vector2(70, 0)))
+        if(ImGui.Button("Copy"))
             _clipboard = kf.Clone();
         AttachTooltip("Copy this keyframe's pose + easing");
 
         ImGui.SameLine();
         using(Dalamud.Interface.Utility.Raii.ImRaii.Disabled(_clipboard is null))
         {
-            if(ImGui.Button("Paste", new Vector2(70, 0)) && _clipboard is not null)
+            if(ImGui.Button("Paste") && _clipboard is not null)
             {
                 // Paste onto the selected track at the playhead — copy frame 0 here at the end for a clean loop.
                 _selectedKeyframe = _selectedTrack.AddOrReplace(cap.Playhead, _clipboard.Value, _clipboard.EaseToNext);
@@ -523,7 +520,7 @@ public class AnimationEditorWindow : Window, IDisposable
         AttachTooltip("Paste the copied pose to this track at the playhead (great for clean loops)");
 
         ImGui.SameLine();
-        if(ImGui.Button("Ease → Track", new Vector2(110, 0)))
+        if(ImGui.Button("Ease → Track"))
         {
             foreach(var other in _selectedTrack.Keyframes)
                 other.EaseToNext = kf.EaseToNext;
@@ -531,7 +528,7 @@ public class AnimationEditorWindow : Window, IDisposable
         AttachTooltip("Apply this keyframe's easing to every keyframe on this track");
 
         ImGui.SameLine();
-        if(ImGui.Button("Delete", new Vector2(90, 0)))
+        if(ImGui.Button("Delete"))
         {
             DeleteSelectedKeyframe(cap);
             return;
