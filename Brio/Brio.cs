@@ -223,6 +223,7 @@ public class Brio : IDalamudPlugin
         serviceCollection.AddSingleton<LibraryWindow>();
         serviceCollection.AddSingleton<ActorAppearanceWindow>();
         serviceCollection.AddSingleton<ActionTimelineWindow>();
+        serviceCollection.AddSingleton<AnimationEditorWindow>();
         serviceCollection.AddSingleton<PosingOverlayWindow>();
         serviceCollection.AddSingleton<KeyBindPromptWindow>();
         serviceCollection.AddSingleton<PosingOverlayToolbarWindow>();

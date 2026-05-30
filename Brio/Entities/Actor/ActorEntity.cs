@@ -95,6 +95,8 @@ public class ActorEntity(IGameObject gameObject, IServiceProvider provider) : En
 
         AddCapability(ActionTimelineCapability.CreateIfEligible(_serviceProvider, this));
 
+        AddCapability(AnimationCapability.CreateIfEligible(_serviceProvider, this));
+
         if(ActorType is not ActorType.Prop)
         {
             if(ActorType is not ActorType.Effect)

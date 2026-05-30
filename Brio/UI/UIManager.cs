@@ -31,6 +31,7 @@ public class UIManager : IDisposable
     private readonly LibraryWindow _libraryWindow;
     private readonly ActorAppearanceWindow _actorAppearanceWindow;
     private readonly ActionTimelineWindow _actionTimelineWindow;
+    private readonly AnimationEditorWindow _animationEditorWindow;
     private readonly PosingOverlayWindow _overlayWindow;
     private readonly KeyBindPromptWindow _keyBindPromptWindow;
     private readonly PosingOverlayToolbarWindow _overlayToolbarWindow;
@@ -80,6 +81,7 @@ public class UIManager : IDisposable
             ProjectWindow projectWindow,
             ActorAppearanceWindow appearanceWindow,
             ActionTimelineWindow actionTimelineWindow,
+            AnimationEditorWindow animationEditorWindow,
             PosingOverlayWindow overlayWindow,
             KeyBindPromptWindow keyBindPromptWindow,
             PosingOverlayToolbarWindow overlayToolbarWindow,
@@ -109,6 +111,7 @@ public class UIManager : IDisposable
         _projectWindow = projectWindow;
         _actorAppearanceWindow = appearanceWindow;
         _actionTimelineWindow = actionTimelineWindow;
+        _animationEditorWindow = animationEditorWindow;
         _overlayWindow = overlayWindow;
         _keyBindPromptWindow = keyBindPromptWindow;
         _overlayToolbarWindow = overlayToolbarWindow;
@@ -133,6 +136,7 @@ public class UIManager : IDisposable
         _windowSystem.AddWindow(_updateWindow);
         _windowSystem.AddWindow(_actorAppearanceWindow);
         _windowSystem.AddWindow(_actionTimelineWindow);
+        _windowSystem.AddWindow(_animationEditorWindow);
         _windowSystem.AddWindow(_overlayWindow);
         _windowSystem.AddWindow(_keyBindPromptWindow);
         _windowSystem.AddWindow(_overlayToolbarWindow);
@@ -161,6 +165,11 @@ public class UIManager : IDisposable
     public void ToggleActionTimelineWindow()
     {
         _actionTimelineWindow.IsOpen = !_actionTimelineWindow.IsOpen;
+    }
+
+    public void ToggleAnimationEditorWindow()
+    {
+        _animationEditorWindow.IsOpen = !_animationEditorWindow.IsOpen;
     }
 
     public void ToggleGraphicalPosingWindow()
