@@ -49,6 +49,10 @@ public class AnimationEditorWindow : Window, IDisposable
     private bool _openContextMenu;
     private float _contextTime;
 
+    // "Import from game animation" inputs.
+    private int _importAnimId;
+    private int _importSamples = 15;
+
     public AnimationEditorWindow(EntityManager entityManager, GPoseService gPoseService)
         : base($"{Brio.Name} - ANIMATION EDITOR###brio_animation_editor_window")
     {
@@ -108,6 +112,7 @@ public class AnimationEditorWindow : Window, IDisposable
 
         DrawTransport(cap);
         DrawTools(cap);
+        DrawImport(cap);
         ImGui.Separator();
         DrawDopesheet(cap);
         DrawKeyframeInspector(cap);
@@ -148,6 +153,36 @@ public class AnimationEditorWindow : Window, IDisposable
         if(ImGui.Button("Mirror @ Playhead"))
             cap.MirrorAtPlayhead();
         AttachTooltip("Mirror the current pose left/right and re-key the existing tracks (beta)");
+    }
+
+    private void DrawImport(AnimationCapability cap)
+    {
+        if(!ImGui.CollapsingHeader("Import from game animation (beta)"))
+            return;
+
+        ImGui.SetNextItemWidth(120 * ImGuiHelpers.GlobalScale);
+        ImGui.InputInt("Animation ID", ref _importAnimId);
+
+        ImGui.SameLine();
+        ImGui.SetNextItemWidth(90 * ImGuiHelpers.GlobalScale);
+        ImGui.InputInt("Samples", ref _importSamples);
+
+        ImGui.SameLine();
+        using(Dalamud.Interface.Utility.Raii.ImRaii.Disabled(cap.IsBaking || _importAnimId <= 0 || _importSamples < 2))
+        {
+            if(ImGui.Button("Bake to keyframes"))
+                cap.BakeFromGameAnimation((ushort)_importAnimId, _importSamples);
+        }
+
+        if(cap.IsBaking)
+        {
+            ImGui.SameLine();
+            ImGui.TextDisabled("Baking…");
+        }
+
+        ImGui.TextWrapped("Plays the given timeline animation, samples it across its full duration, and bakes every bone "
+            + "into editable keyframes. Replaces the current clip. Find animation IDs via Brio's Animation Control panel. "
+            + "More samples = smoother but heavier; thin them afterwards. Experimental.");
     }
 
     private void HandleShortcuts(AnimationCapability cap)

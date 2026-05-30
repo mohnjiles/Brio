@@ -2,6 +2,7 @@ using Brio.Capabilities.Actor;
 using Brio.Core;
 using Brio.Entities.Actor;
 using Brio.Files;
+using Brio.Game.Actor.Extensions;
 using Brio.Game.Posing;
 using Brio.Game.Posing.Animation;
 using Brio.Game.Posing.Skeletons;
@@ -9,6 +10,7 @@ using Brio.Resources;
 using Brio.UI.Widgets.Posing;
 using Dalamud.Game.ClientState.Objects.Types;
 using Dalamud.Plugin.Services;
+using FFXIVClientStructs.FFXIV.Client.Graphics.Scene;
 using Microsoft.Extensions.DependencyInjection;
 using System;
 using System.Collections.Generic;
@@ -309,6 +311,163 @@ public class AnimationCapability : ActorCharacterCapability
         if(Clip.ModelTrack is not null)
             foreach(var kf in Clip.ModelTrack.Keyframes)
                 yield return kf.Time;
+    }
+
+    #endregion
+
+    #region Import from game animation
+
+    public bool IsBaking { get; private set; }
+
+    /// <summary>
+    /// Plays a game timeline animation, scrubs its internal time across the full duration, and
+    /// snapshots every bone at each sample into editable keyframes (replacing the current clip).
+    /// Runs across several frames. Experimental.
+    /// </summary>
+    public void BakeFromGameAnimation(ushort animationId, int sampleCount)
+    {
+        if(IsBaking || animationId == 0 || sampleCount < 2)
+            return;
+
+        if(!Actor.TryGetCapability<ActionTimelineCapability>(out var actionTimeline) || actionTimeline is null)
+            return;
+
+        IsBaking = true;
+        IsPlaying = false;
+        IsPaused = false;
+
+        // Clear our overrides so the captured bones are the pure game-animation pose, then play
+        // the chosen animation as the base and freeze it so we can scrub it by hand.
+        SkeletonPosing.ResetPose();
+        actionTimeline.ApplyBaseOverride(animationId, interrupt: true);
+        actionTimeline.SetOverallSpeedOverride(0f);
+
+        // Give the animation a few frames to bind before we read its duration.
+        _framework.RunOnTick(() => BakeStart(actionTimeline, animationId, sampleCount), delayTicks: 8);
+    }
+
+    private void BakeStart(ActionTimelineCapability actionTimeline, ushort animationId, int sampleCount)
+    {
+        var duration = GetCurrentAnimationDuration();
+        if(duration <= 0f)
+        {
+            FinishBake(actionTimeline);
+            return;
+        }
+
+        Clip = new AnimationClip { Name = $"Game anim {animationId}", Duration = duration };
+
+        var times = new float[sampleCount];
+        for(var i = 0; i < sampleCount; i++)
+            times[i] = duration * i / (sampleCount - 1);
+
+        BakeSample(actionTimeline, times, 0);
+    }
+
+    private void BakeSample(ActionTimelineCapability actionTimeline, float[] times, int index)
+    {
+        if(index >= times.Length)
+        {
+            FinishBake(actionTimeline);
+            return;
+        }
+
+        SetAnimationLocalTime(times[index]);
+
+        // Let the skeleton evaluate the new local time, then snapshot it on the next tick.
+        _framework.RunOnTick(() =>
+        {
+            CaptureAllBonesAt(times[index]);
+            BakeSample(actionTimeline, times, index + 1);
+        }, delayTicks: 2);
+    }
+
+    private void FinishBake(ActionTimelineCapability actionTimeline)
+    {
+        actionTimeline.ResetBaseOverride();
+        actionTimeline.ResetOverallSpeedOverride();
+
+        IsBaking = false;
+        Playhead = 0f;
+
+        // Force a fresh base capture so the baked (absolute) poses play back against a clean idle
+        // base. BeginEditing() on the next editor frame re-engages and recaptures.
+        _engaged = false;
+        _baseReady = false;
+        _baseTransforms.Clear();
+    }
+
+    private void CaptureAllBonesAt(float time)
+    {
+        var skeleton = SkeletonPosing.CharacterSkeleton;
+        if(skeleton is null)
+            return;
+
+        foreach(var bone in skeleton.Bones)
+        {
+            if(bone.IsPartialRoot && !bone.IsSkeletonRoot)
+                continue;
+
+            Clip.GetOrCreateTrack(bone.Name).AddOrReplace(time, bone.LastRawTransform);
+        }
+    }
+
+    private unsafe float GetCurrentAnimationDuration()
+    {
+        var drawObject = Character.Native()->GameObject.DrawObject;
+        if(drawObject == null || drawObject->Object.GetObjectType() != ObjectType.CharacterBase)
+            return 0f;
+
+        var charaBase = (CharacterBase*)drawObject;
+        if(charaBase->Skeleton == null || charaBase->Skeleton->PartialSkeletonCount <= 0)
+            return 0f;
+
+        var partial = &charaBase->Skeleton->PartialSkeletons[0];
+        var animatedSkele = partial->GetHavokAnimatedSkeleton(0);
+        if(animatedSkele == null || animatedSkele->AnimationControls.Length <= 0)
+            return 0f;
+
+        var control = animatedSkele->AnimationControls[0].Value;
+        if(control == null)
+            return 0f;
+
+        var binding = control->hkaAnimationControl.Binding;
+        if(binding.ptr == null || binding.ptr->Animation.ptr == null)
+            return 0f;
+
+        return binding.ptr->Animation.ptr->Duration;
+    }
+
+    private unsafe void SetAnimationLocalTime(float time)
+    {
+        var drawObject = Character.Native()->GameObject.DrawObject;
+        if(drawObject == null || drawObject->Object.GetObjectType() != ObjectType.CharacterBase)
+            return;
+
+        var charaBase = (CharacterBase*)drawObject;
+        if(charaBase->Skeleton == null)
+            return;
+
+        for(var p = 0; p < charaBase->Skeleton->PartialSkeletonCount; ++p)
+        {
+            var partial = &charaBase->Skeleton->PartialSkeletons[p];
+            var animatedSkele = partial->GetHavokAnimatedSkeleton(0);
+            if(animatedSkele == null)
+                continue;
+
+            for(var c = 0; c < animatedSkele->AnimationControls.Length; ++c)
+            {
+                var control = animatedSkele->AnimationControls[c].Value;
+                if(control == null)
+                    continue;
+
+                var binding = control->hkaAnimationControl.Binding;
+                if(binding.ptr == null || binding.ptr->Animation.ptr == null)
+                    continue;
+
+                control->hkaAnimationControl.LocalTime = Math.Clamp(time, 0f, binding.ptr->Animation.ptr->Duration);
+            }
+        }
     }
 
     #endregion
