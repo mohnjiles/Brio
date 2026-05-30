@@ -350,14 +350,19 @@ public class AnimationCapability : ActorCharacterCapability
         IsPlaying = false;
         IsPaused = false;
 
-        // Clear our overrides so the captured bones are the pure game-animation pose, then play
-        // the chosen animation as the base and freeze it so we can scrub it by hand.
+        // Clear our overrides, then PLAY the chosen animation at normal speed first. It must
+        // actually blend in and drive the skeleton — if we freeze immediately it never takes over
+        // and every sample just captures the idle pose (looks static / "nothing happens").
         SkeletonPosing.ResetPose();
         actionTimeline.ApplyBaseOverride(animationId, interrupt: true);
-        actionTimeline.SetOverallSpeedOverride(0f);
+        actionTimeline.SetOverallSpeedOverride(1f);
 
-        // Give the animation a few frames to bind before we read its duration.
-        _framework.RunOnTick(() => BakeStart(actionTimeline, animationId, sampleCount), delayTicks: 8);
+        _framework.RunOnTick(() =>
+        {
+            // Now that it's blended in, freeze it so we can scrub it frame-by-frame.
+            actionTimeline.SetOverallSpeedOverride(0f);
+            _framework.RunOnTick(() => BakeStart(actionTimeline, animationId, sampleCount), delayTicks: 4);
+        }, delayTicks: 20);
     }
 
     private void BakeStart(ActionTimelineCapability actionTimeline, ushort animationId, int sampleCount)
