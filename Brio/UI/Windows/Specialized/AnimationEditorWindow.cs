@@ -45,6 +45,10 @@ public class AnimationEditorWindow : Window, IDisposable
     // Copy/paste clipboard for a single keyframe (pose + easing). Persists across selections.
     private Keyframe? _clipboard;
 
+    // Right-click context menu state.
+    private bool _openContextMenu;
+    private float _contextTime;
+
     public AnimationEditorWindow(EntityManager entityManager, GPoseService gPoseService)
         : base($"{Brio.Name} - ANIMATION EDITOR###brio_animation_editor_window")
     {
@@ -86,15 +90,95 @@ public class AnimationEditorWindow : Window, IDisposable
         {
             _editingCapability?.EndEditing();
             _editingCapability = cap;
+
+            // Drop selection/drag state so we never point at another actor's clip.
+            _selectedKeyframe = null;
+            _selectedTrack = null;
+            _dragKeyframe = null;
+            _dragTrack = null;
+            _scrubbing = false;
         }
         cap.BeginEditing();
+
+        // Never let a keyframe hide past the end of the timeline (e.g. after loading a longer clip).
+        if(cap.Clip.MaxKeyframeTime > cap.Duration)
+            cap.Duration = cap.Clip.MaxKeyframeTime;
 
         WindowName = $"{Brio.Name} - Animation Editor - {cap.Entity.FriendlyName}###brio_animation_editor_window";
 
         DrawTransport(cap);
+        DrawTools(cap);
         ImGui.Separator();
         DrawDopesheet(cap);
         DrawKeyframeInspector(cap);
+
+        HandleShortcuts(cap);
+    }
+
+    private void DrawTools(AnimationCapability cap)
+    {
+        if(ImGui.Button("|< Prev", new Vector2(70, 0)))
+            cap.JumpToPrevKeyframe();
+        AttachTooltip("Jump to the previous keyframe");
+
+        ImGui.SameLine();
+        if(ImGui.Button("Next >|", new Vector2(70, 0)))
+            cap.JumpToNextKeyframe();
+        AttachTooltip("Jump to the next keyframe");
+
+        ImGui.SameLine();
+        if(ImGui.Button("Make Loop", new Vector2(90, 0)))
+            cap.KeyAllTracksFromTime(0f);
+        AttachTooltip("Key every track at the playhead using its value at t=0 — scrub to the end first for a seamless loop");
+
+        ImGui.SameLine();
+        if(ImGui.Button("Copy Frame", new Vector2(100, 0)))
+            cap.CopyFrame();
+        AttachTooltip("Copy the whole pose at the playhead (all tracks)");
+
+        ImGui.SameLine();
+        using(Dalamud.Interface.Utility.Raii.ImRaii.Disabled(!cap.HasFrameClipboard))
+        {
+            if(ImGui.Button("Paste Frame", new Vector2(100, 0)))
+                cap.PasteFrame();
+        }
+        AttachTooltip("Paste the copied whole-pose at the playhead");
+
+        ImGui.SameLine();
+        if(ImGui.Button("Mirror @ Playhead", new Vector2(150, 0)))
+            cap.MirrorAtPlayhead();
+        AttachTooltip("Mirror the current pose left/right and re-key the existing tracks (beta)");
+    }
+
+    private void HandleShortcuts(AnimationCapability cap)
+    {
+        if(!ImGui.IsWindowFocused(ImGuiFocusedFlags.RootAndChildWindows) || ImGui.GetIO().WantTextInput)
+            return;
+
+        if(ImGui.IsKeyPressed(ImGuiKey.Space, false))
+            cap.TogglePlay();
+
+        if(ImGui.IsKeyPressed(ImGuiKey.Delete, false))
+            DeleteSelectedKeyframe(cap);
+
+        var step = ImGui.GetIO().KeyShift ? 0.5f : 0.1f;
+        if(ImGui.IsKeyPressed(ImGuiKey.LeftArrow))
+            cap.ScrubTo(cap.Playhead - step);
+        if(ImGui.IsKeyPressed(ImGuiKey.RightArrow))
+            cap.ScrubTo(cap.Playhead + step);
+    }
+
+    private void DeleteSelectedKeyframe(AnimationCapability cap)
+    {
+        if(_selectedKeyframe is null || _selectedTrack is null)
+            return;
+
+        _selectedTrack.Remove(_selectedKeyframe);
+        if(!_selectedTrack.HasKeyframes)
+            cap.Clip.RemoveTrack(_selectedTrack.BoneName);
+
+        _selectedKeyframe = null;
+        _selectedTrack = null;
     }
 
     private void DrawTransport(AnimationCapability cap)
@@ -136,6 +220,11 @@ public class AnimationEditorWindow : Window, IDisposable
         if(ImGui.Button("Key All Bones", new Vector2(120, 0)))
             cap.KeyAll();
         AttachTooltip("Key every body bone at the playhead");
+
+        ImGui.SameLine();
+        if(ImGui.Button("Key Root", new Vector2(90, 0)))
+            cap.KeyModelTransform();
+        AttachTooltip("Key the whole-body model transform (position/rotation/scale) at the playhead");
 
         ImGui.SameLine();
         if(ImGui.Button("Save", new Vector2(80, 0)))
@@ -247,48 +336,37 @@ public class AnimationEditorWindow : Window, IDisposable
             new Vector2(playX + 5, origin.Y),
             new Vector2(playX, origin.Y + 8),
             playheadColor);
+
+        if(_openContextMenu)
+        {
+            ImGui.OpenPopup("##anim_kf_ctx");
+            _openContextMenu = false;
+        }
+        DrawContextMenu(cap);
     }
 
     private void HandleInteraction(AnimationCapability cap, List<TrackRow> tracks, float tracksTop, float rowHeight,
         Func<float, float> timeToX, Func<float, float> xToTime, Vector2 mouse)
     {
-        var scale = ImGuiHelpers.GlobalScale;
-
+        // Left press: grab a keyframe, otherwise start scrubbing.
         if(ImGui.IsItemActivated())
         {
-            // Press: try to grab a keyframe, otherwise start scrubbing.
             _dragKeyframe = null;
             _dragTrack = null;
             _scrubbing = false;
 
-            var row = (int)((mouse.Y - tracksTop) / rowHeight);
-            if(row >= 0 && row < tracks.Count)
+            if(TryHitKeyframe(tracks, mouse, tracksTop, rowHeight, timeToX, out var hit, out var hitTrack))
             {
-                var rowCenterY = tracksTop + row * rowHeight + rowHeight * 0.5f;
-                Keyframe? best = null;
-                var bestDist = KeyframeHitRadius * scale;
-                foreach(var kf in tracks[row].Track.Keyframes)
-                {
-                    var dist = MathF.Abs(timeToX(kf.Time) - mouse.X);
-                    if(dist <= bestDist && MathF.Abs(mouse.Y - rowCenterY) <= rowHeight * 0.5f)
-                    {
-                        best = kf;
-                        bestDist = dist;
-                    }
-                }
-
-                if(best is not null)
-                {
-                    _selectedKeyframe = best;
-                    _selectedTrack = tracks[row].Track;
-                    _dragKeyframe = best;
-                    _dragTrack = tracks[row].Track;
-                    return;
-                }
+                _selectedKeyframe = hit;
+                _selectedTrack = hitTrack;
+                _dragKeyframe = hit;
+                _dragTrack = hitTrack;
             }
-
-            _scrubbing = true;
-            cap.ScrubTo(xToTime(mouse.X));
+            else
+            {
+                _scrubbing = true;
+                cap.ScrubTo(xToTime(mouse.X));
+            }
         }
         else if(ImGui.IsItemActive())
         {
@@ -304,6 +382,86 @@ public class AnimationEditorWindow : Window, IDisposable
             _dragTrack = null;
             _scrubbing = false;
         }
+
+        // Right-click a keyframe: open its context menu.
+        if(ImGui.IsItemHovered() && ImGui.IsMouseClicked(ImGuiMouseButton.Right)
+            && TryHitKeyframe(tracks, mouse, tracksTop, rowHeight, timeToX, out var rkf, out var rtrack))
+        {
+            _selectedKeyframe = rkf;
+            _selectedTrack = rtrack;
+            _contextTime = xToTime(mouse.X);
+            _openContextMenu = true;
+        }
+
+        // Double-click empty lane: add a keyframe of the bone's current pose at that time.
+        if(ImGui.IsItemHovered() && ImGui.IsMouseDoubleClicked(ImGuiMouseButton.Left)
+            && !TryHitKeyframe(tracks, mouse, tracksTop, rowHeight, timeToX, out _, out _))
+        {
+            var row = (int)((mouse.Y - tracksTop) / rowHeight);
+            if(row >= 0 && row < tracks.Count)
+            {
+                var time = xToTime(mouse.X);
+                var track = tracks[row].Track;
+                if(ReferenceEquals(track, cap.Clip.ModelTrack))
+                    cap.KeyModelTransformAt(time);
+                else
+                    cap.KeyBoneAt(track.BoneName, time);
+            }
+        }
+    }
+
+    private static bool TryHitKeyframe(List<TrackRow> tracks, Vector2 mouse, float tracksTop, float rowHeight,
+        Func<float, float> timeToX, out Keyframe? keyframe, out BoneTrack? track)
+    {
+        keyframe = null;
+        track = null;
+
+        var row = (int)((mouse.Y - tracksTop) / rowHeight);
+        if(row < 0 || row >= tracks.Count)
+            return false;
+
+        var rowCenterY = tracksTop + row * rowHeight + rowHeight * 0.5f;
+        if(MathF.Abs(mouse.Y - rowCenterY) > rowHeight * 0.5f)
+            return false;
+
+        Keyframe? best = null;
+        var bestDist = KeyframeHitRadius * ImGuiHelpers.GlobalScale;
+        foreach(var kf in tracks[row].Track.Keyframes)
+        {
+            var dist = MathF.Abs(timeToX(kf.Time) - mouse.X);
+            if(dist <= bestDist)
+            {
+                best = kf;
+                bestDist = dist;
+            }
+        }
+
+        if(best is null)
+            return false;
+
+        keyframe = best;
+        track = tracks[row].Track;
+        return true;
+    }
+
+    private void DrawContextMenu(AnimationCapability cap)
+    {
+        using var popup = Dalamud.Interface.Utility.Raii.ImRaii.Popup("##anim_kf_ctx");
+        if(!popup.Success || _selectedKeyframe is null || _selectedTrack is null)
+            return;
+
+        if(ImGui.MenuItem("Copy"))
+            _clipboard = _selectedKeyframe.Clone();
+
+        using(Dalamud.Interface.Utility.Raii.ImRaii.Disabled(_clipboard is null))
+        {
+            if(ImGui.MenuItem("Paste here") && _clipboard is not null)
+                _selectedKeyframe = _selectedTrack.AddOrReplace(_contextTime, _clipboard.Value, _clipboard.EaseToNext);
+        }
+
+        ImGui.Separator();
+        if(ImGui.MenuItem("Delete"))
+            DeleteSelectedKeyframe(cap);
     }
 
     private void DrawKeyframeInspector(AnimationCapability cap)
@@ -324,7 +482,9 @@ public class AnimationEditorWindow : Window, IDisposable
         ImGui.SetNextItemWidth(160 * ImGuiHelpers.GlobalScale);
         if(ImGui.InputFloat("Time", ref time, 0.05f, 0.1f, "%.3f"))
         {
-            kf.Time = Math.Clamp(time, 0f, cap.Duration);
+            kf.Time = MathF.Max(0f, time);
+            if(kf.Time > cap.Duration)
+                cap.Duration = kf.Time;
             _selectedTrack.Sort();
         }
 
@@ -363,13 +523,17 @@ public class AnimationEditorWindow : Window, IDisposable
         AttachTooltip("Paste the copied pose to this track at the playhead (great for clean loops)");
 
         ImGui.SameLine();
+        if(ImGui.Button("Ease → Track", new Vector2(110, 0)))
+        {
+            foreach(var other in _selectedTrack.Keyframes)
+                other.EaseToNext = kf.EaseToNext;
+        }
+        AttachTooltip("Apply this keyframe's easing to every keyframe on this track");
+
+        ImGui.SameLine();
         if(ImGui.Button("Delete", new Vector2(90, 0)))
         {
-            _selectedTrack.Remove(kf);
-            if(!_selectedTrack.HasKeyframes)
-                cap.Clip.RemoveTrack(_selectedTrack.BoneName);
-            _selectedKeyframe = null;
-            _selectedTrack = null;
+            DeleteSelectedKeyframe(cap);
             return;
         }
 

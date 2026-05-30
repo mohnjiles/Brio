@@ -145,13 +145,20 @@ public class AnimationCapability : ActorCharacterCapability
     #region Keying
 
     /// <summary>Keys a single bone at the current playhead, capturing its current posed transform.</summary>
-    public void KeyBone(string boneName)
+    public void KeyBone(string boneName) => KeyBoneAt(boneName, Playhead);
+
+    /// <summary>Keys a single bone at an explicit time, growing the clip if needed.</summary>
+    public void KeyBoneAt(string boneName, float time)
     {
         var bone = SkeletonPosing.GetBone(boneName, PoseInfoSlot.Character);
         if(bone is null)
             return;
 
-        Clip.GetOrCreateTrack(boneName).AddOrReplace(Playhead, bone.LastRawTransform);
+        time = MathF.Max(0f, time);
+        Clip.GetOrCreateTrack(boneName).AddOrReplace(time, bone.LastRawTransform);
+
+        if(time > Duration)
+            Duration = time;
     }
 
     /// <summary>Keys every character bone at the current playhead (full-body snapshot).</summary>
@@ -171,9 +178,16 @@ public class AnimationCapability : ActorCharacterCapability
     }
 
     /// <summary>Keys the actor's root model transform at the current playhead.</summary>
-    public void KeyModelTransform()
+    public void KeyModelTransform() => KeyModelTransformAt(Playhead);
+
+    /// <summary>Keys the actor's root model transform at an explicit time, growing the clip if needed.</summary>
+    public void KeyModelTransformAt(float time)
     {
-        Clip.GetOrCreateModelTrack().AddOrReplace(Playhead, ModelPosing.Transform);
+        time = MathF.Max(0f, time);
+        Clip.GetOrCreateModelTrack().AddOrReplace(time, ModelPosing.Transform);
+
+        if(time > Duration)
+            Duration = time;
     }
 
     /// <summary>Keys whichever bones are currently selected in the posing tools.</summary>
@@ -184,6 +198,117 @@ public class AnimationCapability : ActorCharacterCapability
 
         foreach(var selected in posing.SelectedBones)
             KeyBone(selected.BoneName);
+    }
+
+    #endregion
+
+    #region Loop / pose tools
+
+    /// <summary>
+    /// Keys every track at the current playhead using its value sampled at <paramref name="sourceTime"/>.
+    /// Scrub to the end and call with 0 for a seamless loop (end frame == start frame).
+    /// </summary>
+    public void KeyAllTracksFromTime(float sourceTime)
+    {
+        foreach(var track in Clip.BoneTracks.Values)
+            if(track.HasKeyframes)
+                track.AddOrReplace(Playhead, PoseInterpolation.Sample(track, sourceTime));
+
+        if(Clip.ModelTrack?.HasKeyframes == true)
+            Clip.ModelTrack.AddOrReplace(Playhead, PoseInterpolation.Sample(Clip.ModelTrack, sourceTime));
+
+        if(Playhead > Duration)
+            Duration = Playhead;
+    }
+
+    private readonly Dictionary<string, Transform> _frameClipboard = [];
+    private Transform? _frameModelClipboard;
+    public bool HasFrameClipboard => _frameClipboard.Count > 0 || _frameModelClipboard.HasValue;
+
+    /// <summary>Copies the whole evaluated pose at the playhead (every track) into the frame clipboard.</summary>
+    public void CopyFrame()
+    {
+        _frameClipboard.Clear();
+        _frameModelClipboard = null;
+
+        foreach(var (name, track) in Clip.BoneTracks)
+            if(track.HasKeyframes)
+                _frameClipboard[name] = PoseInterpolation.Sample(track, Playhead);
+
+        if(Clip.ModelTrack?.HasKeyframes == true)
+            _frameModelClipboard = PoseInterpolation.Sample(Clip.ModelTrack, Playhead);
+    }
+
+    /// <summary>Keys the copied whole-pose at the current playhead.</summary>
+    public void PasteFrame()
+    {
+        foreach(var (name, value) in _frameClipboard)
+            Clip.GetOrCreateTrack(name).AddOrReplace(Playhead, value);
+
+        if(_frameModelClipboard.HasValue)
+            Clip.GetOrCreateModelTrack().AddOrReplace(Playhead, _frameModelClipboard.Value);
+
+        if(Playhead > Duration)
+            Duration = Playhead;
+    }
+
+    /// <summary>Re-keys every existing track at the playhead from the rig's current pose.</summary>
+    public void ReKeyExistingTracksAtPlayhead()
+    {
+        foreach(var name in new List<string>(Clip.BoneTracks.Keys))
+            KeyBoneAt(name, Playhead);
+
+        if(Clip.ModelTrack?.HasKeyframes == true)
+            KeyModelTransformAt(Playhead);
+    }
+
+    /// <summary>
+    /// Mirrors the current pose left/right (reusing Brio's MirrorPose) and re-keys the existing
+    /// tracks at the playhead once it settles. Best-effort / timing-dependent.
+    /// </summary>
+    public void MirrorAtPlayhead()
+    {
+        if(!Entity.TryGetCapability<PosingCapability>(out var posing) || posing is null)
+            return;
+
+        EditAtPlayhead();
+        posing.MirrorPose();
+        _framework.RunOnTick(ReKeyExistingTracksAtPlayhead, delayTicks: 6);
+    }
+
+    /// <summary>Moves the playhead to the nearest keyframe before it (any track).</summary>
+    public void JumpToPrevKeyframe()
+    {
+        float? best = null;
+        foreach(var t in AllKeyframeTimes())
+            if(t < Playhead - 1e-4f && (best is null || t > best))
+                best = t;
+
+        if(best.HasValue)
+            ScrubTo(best.Value);
+    }
+
+    /// <summary>Moves the playhead to the nearest keyframe after it (any track).</summary>
+    public void JumpToNextKeyframe()
+    {
+        float? best = null;
+        foreach(var t in AllKeyframeTimes())
+            if(t > Playhead + 1e-4f && (best is null || t < best))
+                best = t;
+
+        if(best.HasValue)
+            ScrubTo(best.Value);
+    }
+
+    private IEnumerable<float> AllKeyframeTimes()
+    {
+        foreach(var track in Clip.BoneTracks.Values)
+            foreach(var kf in track.Keyframes)
+                yield return kf.Time;
+
+        if(Clip.ModelTrack is not null)
+            foreach(var kf in Clip.ModelTrack.Keyframes)
+                yield return kf.Time;
     }
 
     #endregion
