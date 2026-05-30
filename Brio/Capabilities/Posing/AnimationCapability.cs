@@ -50,21 +50,25 @@ public class AnimationCapability : ActorCharacterCapability
         set => Clip.Duration = MathF.Max(0.01f, value);
     }
 
-    // Clean (un-overridden) frozen base pose, captured once when the actor is engaged for
-    // animation. Playback deltas are computed against this fixed reference so a frozen actor
-    // reproduces each keyframe exactly.
-    private readonly Dictionary<string, Transform> _baseTransforms = [];
     private bool _engaged;
     private bool _baseReady;
     private float _originalSpeed = 1f;
     private bool _modelOverridden;
 
+    // The pose the actor had when we engaged (e.g. one loaded in Brio's Posing panel). We lock to
+    // this as the rest pose and restore it when playback stops, instead of snapping back to idle.
+    private PoseInfo? _restPose;
+
+    // Importer options used to re-apply the evaluated pose each frame (all components, all bones).
+    private readonly PoseImporterOptions _importerOptions;
+
     private SkeletonPosingCapability SkeletonPosing => Entity.GetCapability<SkeletonPosingCapability>();
     private ModelPosingCapability ModelPosing => Entity.GetCapability<ModelPosingCapability>();
 
-    public AnimationCapability(ActorEntity parent, IFramework framework) : base(parent)
+    public AnimationCapability(ActorEntity parent, IFramework framework, PosingService posingService) : base(parent)
     {
         _framework = framework;
+        _importerOptions = new PoseImporterOptions(new BoneFilter(posingService), TransformComponents.All, false);
         Widget = new AnimationWidget(this);
 
         _framework.Update += OnFrameworkUpdate;
@@ -122,7 +126,7 @@ public class AnimationCapability : ActorCharacterCapability
         Playhead = 0f;
 
         if(IsEditing)
-            SkeletonPosing.ResetPose();
+            RestoreRestPose();
         else
             Disengage();
     }
@@ -132,6 +136,16 @@ public class AnimationCapability : ActorCharacterCapability
     /// it only moves the time cursor (where the next keyframe lands) and never touches the pose, so
     /// you can pose freely at any time and key it.
     /// </summary>
+    /// <summary>Discards the whole clip and returns to the rest pose.</summary>
+    public void ClearClip()
+    {
+        IsPlaying = false;
+        IsPaused = false;
+        Playhead = 0f;
+        Clip = new AnimationClip();
+        RestoreRestPose();
+    }
+
     public void ScrubTo(float time)
     {
         Playhead = Math.Clamp(time, 0f, Duration);
@@ -390,11 +404,9 @@ public class AnimationCapability : ActorCharacterCapability
         IsBaking = false;
         Playhead = 0f;
 
-        // Force a fresh base capture so the baked (absolute) poses play back against a clean idle
-        // base. BeginEditing() on the next editor frame re-engages and recaptures.
+        // Force a re-engage on the next editor frame so the baked clip plays from a fresh rest pose.
         _engaged = false;
         _baseReady = false;
-        _baseTransforms.Clear();
     }
 
     private void CaptureAllBonesAt(float time)
@@ -551,36 +563,14 @@ public class AnimationCapability : ActorCharacterCapability
 
     private void ApplyEvaluatedPose()
     {
-        foreach(var (boneName, track) in Clip.BoneTracks)
-        {
-            if(!track.HasKeyframes)
-                continue;
-
-            var bone = SkeletonPosing.GetBone(boneName, PoseInfoSlot.Character);
-            if(bone is null)
-                continue;
-
-            // Lazily capture the base for tracks that appeared after activation. Safe because a
-            // brand-new track's bone has no override yet, so LastRawTransform is still the base.
-            if(!_baseTransforms.TryGetValue(boneName, out var baseTransform))
-            {
-                baseTransform = bone.LastRawTransform;
-                _baseTransforms[boneName] = baseTransform;
-            }
-
-            var target = PoseInterpolation.Sample(track, Playhead);
-
-            var poseInfo = SkeletonPosing.GetBonePose(bone);
-            poseInfo.ClearStacks();
-            poseInfo.Apply(
-                target,
-                baseTransform,
-                TransformComponents.All,
-                TransformComponents.All,
-                BoneIKInfo.Disabled,
-                PoseMirrorMode.None,
-                forceNewStack: true);
-        }
+        // Re-import the evaluated pose each frame through Brio's importer. The importer keys each
+        // bone's delta against the *live* (parent-first) bone transform, so parent rotations don't
+        // compound into their children, and it reproduces each keyframe's absolute pose regardless
+        // of the frozen base. (Writing fixed model-space deltas ourselves double-counted propagation
+        // down the chain and exaggerated the motion.)
+        var pose = PoseInterpolation.SampleClip(Clip, Playhead);
+        SkeletonPosing.ResetPose();
+        SkeletonPosing.ImportSkeletonPose(pose, _importerOptions);
 
         if(Clip.ModelTrack?.HasKeyframes == true)
         {
@@ -604,41 +594,32 @@ public class AnimationCapability : ActorCharacterCapability
 
         _engaged = true;
         _baseReady = false;
-        _baseTransforms.Clear();
+
+        // Lock to whatever pose the actor currently has (e.g. one loaded in Brio's Posing panel) as
+        // the rest pose — don't wipe it. We restore it when playback stops.
+        _restPose = SkeletonPosing.PoseInfo.Clone();
 
         if(Actor.TryGetCapability<ActionTimelineCapability>(out var actionTimeline) && actionTimeline is not null)
         {
             _originalSpeed = actionTimeline.SpeedMultiplier;
 
-            // Clear any manual pose so the captured base is the clean frozen animation pose, then
-            // freeze the base animation (zeroes speed + each control's local time) and capture the
-            // base once it has settled.
-            SkeletonPosing.ResetPose();
+            // Freeze the base animation (zeroes speed + each control's local time) so the underlying
+            // pose is static; capture readiness once it has settled.
             actionTimeline.SetOverallSpeedOverride(0f);
             actionTimeline.StopSpeedAndResetTimeline(CaptureBase, resetSpeedAfterAction: false);
         }
         else
         {
-            // No timeline to freeze (e.g. a prop) — capture on the next tick.
-            SkeletonPosing.ResetPose();
+            // No timeline to freeze (e.g. a prop) — mark ready on the next tick.
             _framework.RunOnTick(CaptureBase, delayTicks: 2);
         }
     }
 
-    private void CaptureBase()
+    private void CaptureBase() => _baseReady = true;
+
+    private void RestoreRestPose()
     {
-        _baseTransforms.Clear();
-
-        // Capture every character bone (not just currently-keyed ones) so tracks added later during
-        // authoring already have a clean base reference.
-        var skeleton = SkeletonPosing.CharacterSkeleton;
-        if(skeleton is not null)
-        {
-            foreach(var bone in skeleton.Bones)
-                _baseTransforms[bone.Name] = bone.LastRawTransform;
-        }
-
-        _baseReady = true;
+        SkeletonPosing.PoseInfo = _restPose?.Clone() ?? new PoseInfo();
     }
 
     private void Disengage()
@@ -648,9 +629,8 @@ public class AnimationCapability : ActorCharacterCapability
 
         _engaged = false;
         _baseReady = false;
-        _baseTransforms.Clear();
 
-        SkeletonPosing.ResetPose();
+        RestoreRestPose();
 
         if(_modelOverridden)
         {

@@ -153,6 +153,31 @@ public class AnimationEditorWindow : Window, IDisposable
         if(ImGui.Button("Mirror @ Playhead"))
             cap.MirrorAtPlayhead();
         AttachTooltip("Mirror the current pose left/right and re-key the existing tracks (beta)");
+
+        ImGui.SameLine();
+        if(ImGui.Button("Clear All"))
+            ImGui.OpenPopup("##anim_confirm_clear");
+        AttachTooltip("Delete every keyframe and start over");
+
+        using(var popup = Dalamud.Interface.Utility.Raii.ImRaii.Popup("##anim_confirm_clear"))
+        {
+            if(popup.Success)
+            {
+                ImGui.Text("Clear all keyframes and start over?");
+                ImGui.Separator();
+                if(ImGui.Button("Yes, clear everything"))
+                {
+                    cap.ClearClip();
+                    _selectedKeyframe = null;
+                    _selectedTrack = null;
+                    _clipboard = null;
+                    ImGui.CloseCurrentPopup();
+                }
+                ImGui.SameLine();
+                if(ImGui.Button("Cancel"))
+                    ImGui.CloseCurrentPopup();
+            }
+        }
     }
 
     private void DrawImport(AnimationCapability cap)
